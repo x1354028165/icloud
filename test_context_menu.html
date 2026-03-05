@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>右键菜单测试</title>
+    <style>
+        body { font-family: Arial; margin: 20px; }
+        .test-item { 
+            padding: 20px; 
+            border: 1px solid #ccc; 
+            margin: 10px; 
+            cursor: pointer;
+            background: #f9f9f9;
+        }
+        .context-menu {
+            position: fixed;
+            background: white;
+            border: 1px solid #dadce0;
+            border-radius: 8px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+            padding: 4px 0;
+            min-width: 120px;
+            z-index: 1000;
+        }
+        .context-menu-item {
+            padding: 8px 16px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .context-menu-item:hover {
+            background: #f1f3f4;
+        }
+    </style>
+</head>
+<body>
+    <h2>右键菜单功能测试</h2>
+    <div class="test-item" data-file="test1.txt">
+        📄 测试文件1.txt - 右键点击我
+    </div>
+    <div class="test-item" data-file="test2.jpg">  
+        🖼️ 测试图片2.jpg - 右键点击我
+    </div>
+    <div id="status">等待右键点击...</div>
+
+    <script>
+        document.addEventListener('contextmenu', function(e) {
+            const testItem = e.target.closest('.test-item');
+            if (testItem) {
+                e.preventDefault();
+                const fileName = testItem.getAttribute('data-file');
+                
+                // 移除existing menu
+                const existingMenu = document.getElementById('contextMenu');
+                if (existingMenu) existingMenu.remove();
+                
+                // 创建菜单
+                const menu = document.createElement('div');
+                menu.id = 'contextMenu';
+                menu.className = 'context-menu';
+                menu.style.left = e.clientX + 'px';
+                menu.style.top = e.clientY + 'px';
+                
+                menu.innerHTML = `
+                    <div class="context-menu-item" onclick="testAction('预览', '${fileName}')">👁️ 预览</div>
+                    <div class="context-menu-item" onclick="testAction('下载', '${fileName}')">📥 下载</div>
+                    <div class="context-menu-item" onclick="testAction('重命名', '${fileName}')">✏️ 重命名</div>
+                    <div class="context-menu-item" onclick="testAction('分享', '${fileName}')">🔗 分享</div>
+                    <div class="context-menu-item" onclick="testAction('删除', '${fileName}')">🗑️ 删除</div>
+                `;
+                
+                document.body.appendChild(menu);
+                document.getElementById('status').textContent = '✅ 右键菜单已显示！';
+                
+                // 点击其他地方关闭菜单
+                setTimeout(() => {
+                    document.addEventListener('click', function() {
+                        if (menu.parentNode) menu.remove();
+                        document.getElementById('status').textContent = '菜单已关闭';
+                    }, { once: true });
+                }, 10);
+            }
+        });
+        
+        function testAction(action, fileName) {
+            document.getElementById('status').textContent = `✅ ${action} 操作被触发：${fileName}`;
+            const menu = document.getElementById('contextMenu');
+            if (menu) menu.remove();
+        }
+    </script>
+</body>
+</html>

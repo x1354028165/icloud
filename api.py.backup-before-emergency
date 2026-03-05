@@ -1,0 +1,576 @@
+#!/usr/bin/env python3
+import http.server
+import socketserver
+import json
+import os
+import shutil
+import urllib.parse
+from datetime import datetime
+import tempfile
+import cgi
+from io import BytesIO
+import hmac
+import hashlib
+import base64
+import time
+
+PORT = 8092
+BASE_PATH = "/root/filecloud"
+SECRET_KEY_FILE = "/var/www/modern-drive/secret.key"
+
+
+# ======= 无状态分享系统核心函数 =======
+
+
+# ======= 无状态分享系统核心函数 =======
+
+def get_or_create_secret_key():
+    """获取或创建HMAC密钥"""
+    if os.path.exists(SECRET_KEY_FILE):
+        with open(SECRET_KEY_FILE, 'rb') as f:
+            return f.read()
+    else:
+        # 生成256位随机密钥
+        secret = os.urandom(32)
+        with open(SECRET_KEY_FILE, 'wb') as f:
+            f.write(secret)
+        os.chmod(SECRET_KEY_FILE, 0o600)  # 只有owner可读写
+        return secret
+
+def generate_share_token(file_path, expire_hours):
+    """生成分享token"""
+    # 计算过期时间戳
+    expire_timestamp = int(time.time() + expire_hours * 3600)
+    
+    # 构造payload
+    payload = f"{file_path}|{expire_timestamp}"
+    payload_b64 = base64.urlsafe_b64encode(payload.encode()).decode()
+    
+    # 生成HMAC签名
+    secret = get_or_create_secret_key()
+    signature = hmac.new(
+        secret, 
+        payload.encode(), 
+        hashlib.sha256
+    ).hexdigest()
+    
+    # 拼接token
+    token = f"{payload_b64}.{signature}"
+    return token, expire_timestamp
+
+def verify_share_token(token):
+    """验证分享token"""
+    try:
+        # 分离payload和签名
+        if '.' not in token:
+            return None, "Token格式错误"
+            
+        payload_b64, signature = token.split('.', 1)
+        
+        # 解码payload
+        payload = base64.urlsafe_b64decode(payload_b64).decode()
+        if '|' not in payload:
+            return None, "Payload格式错误"
+            
+        file_path, expire_timestamp = payload.split('|', 1)
+        
+        # 检查过期时间
+        if time.time() > int(expire_timestamp):
+            return None, "链接已过期"
+        
+        # 验证HMAC签名
+        secret = get_or_create_secret_key()
+        expected_signature = hmac.new(
+            secret,
+            payload.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        
+        if not hmac.compare_digest(signature, expected_signature):
+            return None, "签名验证失败"
+            
+        # 路径安全检查
+        if not is_safe_path(file_path):
+            return None, "文件路径不安全"
+            
+        return file_path, None
+        
+    except Exception as e:
+        return None, f"Token解析失败: {str(e)}"
+
+def is_safe_path(file_path):
+    """检查文件路径安全性"""
+    # 基础安全检查
+    if '..' in file_path or file_path.startswith('/') or file_path.startswith('\\'):
+        return False
+    
+    # 规范化路径
+    normalized = os.path.normpath(file_path).replace('\\', '/')
+    
+    # 确保在允许范围内
+    full_path = os.path.join(BASE_PATH, file_path)
+    try:
+        real_path = os.path.realpath(full_path)
+        base_real = os.path.realpath(BASE_PATH)
+        return real_path.startswith(base_real)
+    except:
+        return False
+
+class CloudDriveHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        if self.path.startswith("/api/files"):
+            self.handle_files_api()
+        elif self.path.startswith("/api/storage"):
+            self.handle_storage_api()
+        elif self.path.startswith("/api/shared_download"):
+            self.handle_shared_download()
+        else:
+            self.send_error(404, "API endpoint not found")
+    def do_POST(self):
+        if self.path.startswith("/api/upload"):
+            self.handle_upload()
+        elif self.path.startswith("/api/folder"):
+            self.handle_create_folder()
+        elif self.path.startswith("/api/rename"):
+            self.handle_rename()
+        elif self.path.startswith("/api/search"):
+            self.handle_search()
+        elif self.path.startswith("/api/share"):
+            self.handle_share()
+        elif self.path.startswith("/api/delete"):
+            self.handle_delete()
+        else:
+            self.send_error(404, "API endpoint not found")
+            self.send_error(404, "API endpoint not found")
+    
+    def handle_files_api(self):
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        folder_path = query.get('path', [''])[0]
+        
+        full_path = os.path.join(BASE_PATH, folder_path.lstrip('/'))
+        
+        if not os.path.exists(full_path):
+            self.send_json_response({"error": "Path not found"}, 404)
+            return
+            
+        items = []
+        try:
+            for item in os.listdir(full_path):
+                item_path = os.path.join(full_path, item)
+                is_dir = os.path.isdir(item_path)
+                
+                if is_dir:
+                    items.append({
+                        "name": item,
+                        "type": "folder",
+                        "size": "-",
+                        "modified": datetime.fromtimestamp(os.path.getmtime(item_path)).strftime("%Y-%m-%d %H:%M")
+                    })
+                else:
+                    size = os.path.getsize(item_path)
+                    items.append({
+                        "name": item,
+                        "type": "file",
+                        "size": self.format_size(size),
+                        "modified": datetime.fromtimestamp(os.path.getmtime(item_path)).strftime("%Y-%m-%d %H:%M")
+                    })
+            
+            items.sort(key=lambda x: (x['type'] != 'folder', x['name'].lower()))
+            
+            self.send_json_response({
+                "success": True,
+                "path": folder_path,
+                "items": items
+            })
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def handle_storage_api(self):
+        try:
+            total_size = 0
+            file_count = 0
+            folder_count = 0
+            
+            for root, dirs, files in os.walk(BASE_PATH):
+                folder_count += len(dirs)
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    total_size += os.path.getsize(file_path)
+                    file_count += 1
+            
+            statvfs = os.statvfs(BASE_PATH)
+            total_space = statvfs.f_frsize * statvfs.f_blocks
+            
+            self.send_json_response({
+                "success": True,
+                "used": total_size,
+                "total": total_space,
+                "files": file_count,
+                "folders": folder_count,
+                "used_formatted": self.format_size(total_size),
+                "total_formatted": self.format_size(total_space)
+            })
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def handle_upload(self):
+        try:
+            content_type = self.headers.get('Content-Type', '')
+            if not content_type.startswith('multipart/form-data'):
+                self.send_json_response({"error": "Invalid content type"}, 400)
+                return
+            
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length)
+            
+            env = {'REQUEST_METHOD': 'POST', 'CONTENT_TYPE': content_type, 'CONTENT_LENGTH': str(content_length)}
+            form = cgi.FieldStorage(fp=BytesIO(post_data), environ=env)
+            
+            uploaded_files = []
+            
+            for field in form:
+                if field.file:
+                    filename = field.filename
+                    if filename:
+                        safe_filename = self.get_safe_filename(filename)
+                        file_path = os.path.join(BASE_PATH, safe_filename)
+                        
+                        with open(file_path, 'wb') as f:
+                            f.write(field.file.read())
+                        
+                        uploaded_files.append(safe_filename)
+            
+            self.send_json_response({
+                "success": True,
+                "files": uploaded_files
+            })
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def handle_create_folder(self):
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            folder_name = data.get('name', '').strip()
+            if not folder_name:
+                self.send_json_response({"error": "Folder name required"}, 400)
+                return
+            
+            safe_name = self.get_safe_filename(folder_name)
+            folder_path = os.path.join(BASE_PATH, safe_name)
+            
+            os.makedirs(folder_path, exist_ok=True)
+            
+            self.send_json_response({
+                "success": True,
+                "name": safe_name
+            })
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def handle_rename(self):
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            old_name = data.get('oldName', '')
+            new_name = data.get('newName', '').strip()
+            path = data.get('path', '')
+            
+            if not old_name or not new_name:
+                self.send_json_response({"error": "Old and new names required"}, 400)
+                return
+            
+            old_path = os.path.join(BASE_PATH, path.lstrip('/'), old_name)
+            new_path = os.path.join(BASE_PATH, path.lstrip('/'), new_name)
+            
+            if not os.path.exists(old_path):
+                self.send_json_response({"error": "File not found"}, 404)
+                return
+            
+            if os.path.exists(new_path):
+                self.send_json_response({"error": "Target name already exists"}, 409)
+                return
+            
+            os.rename(old_path, new_path)
+            
+            self.send_json_response({
+                "success": True,
+                "oldName": old_name,
+                "newName": new_name
+            })
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def handle_delete(self):
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            name = data.get('name', '')
+            path = data.get('path', '')
+            
+            if not name:
+                self.send_json_response({"error": "File name required"}, 400)
+                return
+            
+            file_path = os.path.join(BASE_PATH, path.lstrip('/'), name)
+            
+            if not os.path.exists(file_path):
+                self.send_json_response({"error": "File not found"}, 404)
+                return
+            
+            if os.path.isdir(file_path):
+                shutil.rmtree(file_path)
+            else:
+                os.remove(file_path)
+            
+            self.send_json_response({
+                "success": True,
+                "name": name
+            })
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def get_safe_filename(self, filename):
+        base_path = BASE_PATH
+        original = filename
+        counter = 1
+        
+        while os.path.exists(os.path.join(base_path, filename)):
+            name, ext = os.path.splitext(original)
+            filename = f"{name}({counter}){ext}"
+            counter += 1
+        
+        return filename
+    
+    def format_size(self, size):
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size < 1024.0:
+                return f"{size:.1f} {unit}"
+            size /= 1024.0
+        return f"{size:.1f} PB"
+    
+
+    def handle_search(self):
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            query = data.get('query', '').strip()
+            limit = min(int(data.get('limit', 100)), 100)
+            
+            # 输入验证
+            if len(query) < 2:
+                self.send_json_response({"error": "Search query too short (minimum 2 characters)"}, 400)
+                return
+            if len(query) > 50:
+                self.send_json_response({"error": "Search query too long (maximum 50 characters)"}, 400)
+                return
+            
+            # 过滤危险字符
+            dangerous_chars = ['..', '/', '\\', '<', '>', '|', '&', ';']
+            for char in dangerous_chars:
+                if char in query:
+                    self.send_json_response({"error": "Invalid characters in search query"}, 400)
+                    return
+            
+            # 执行搜索
+            start_time = datetime.now()
+            results = self.search_files(query, limit)
+            end_time = datetime.now()
+            elapsed = (end_time - start_time).total_seconds()
+            
+            self.send_json_response({
+                "success": True,
+                "query": query,
+                "results": results,
+                "total": len(results),
+                "elapsed": f"{elapsed:.2f}s"
+            })
+            
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def search_files(self, query, limit):
+        results = []
+        query_lower = query.lower()
+        
+        try:
+            for root, dirs, files in os.walk(BASE_PATH):
+                # 计算相对路径
+                relative_root = os.path.relpath(root, BASE_PATH)
+                if relative_root == '.':
+                    relative_root = ''
+                
+                # 搜索文件夹
+                for dirname in dirs[:]:  # 使用切片创建副本避免修改原列表
+                    if query_lower in dirname.lower():
+                        dir_path = os.path.join(root, dirname)
+                        full_path = os.path.join(relative_root, dirname) if relative_root else dirname
+                        
+                        results.append({
+                            "name": dirname,
+                            "type": "folder",
+                            "path": relative_root,
+                            "fullPath": full_path,
+                            "size": "-",
+                            "modified": datetime.fromtimestamp(os.path.getmtime(dir_path)).strftime("%Y-%m-%d %H:%M")
+                        })
+                
+                # 搜索文件
+                for filename in files:
+                    if query_lower in filename.lower():
+                        file_path = os.path.join(root, filename)
+                        full_path = os.path.join(relative_root, filename) if relative_root else filename
+                        
+                        try:
+                            size = os.path.getsize(file_path)
+                            results.append({
+                                "name": filename,
+                                "type": "file",
+                                "path": relative_root,
+                                "fullPath": full_path,
+                                "size": self.format_size(size),
+                                "modified": datetime.fromtimestamp(os.path.getmtime(file_path)).strftime("%Y-%m-%d %H:%M")
+                            })
+                        except (OSError, IOError):
+                            # 跳过无法访问的文件
+                            continue
+                
+                # 限制结果数量以控制内存
+                if len(results) >= limit:
+                    break
+        
+        except Exception as e:
+            # 搜索过程中的错误不应该导致整个请求失败
+            pass
+        
+        # 排序：文件夹优先，然后按名称
+        results.sort(key=lambda x: (x['type'] != 'folder', x['name'].lower()))
+        return results[:limit]
+
+
+    def handle_share(self):
+        """处理分享链接生成请求"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            file_path = data.get('file_path', '').strip()
+            expire_hours = int(data.get('expire_hours', 24))
+            
+            # 输入验证
+            if not file_path:
+                self.send_json_response({"error": "文件路径不能为空"}, 400)
+                return
+                
+            if expire_hours < 1 or expire_hours > 24*30:  # 最多30天
+                self.send_json_response({"error": "过期时间无效(1小时-30天)"}, 400)
+                return
+            
+            # 路径安全检查
+            if not is_safe_path(file_path):
+                self.send_json_response({"error": "文件路径不安全"}, 400)
+                return
+            
+            # 检查文件是否存在
+            full_path = os.path.join(BASE_PATH, file_path)
+            if not os.path.exists(full_path) or not os.path.isfile(full_path):
+                self.send_json_response({"error": "文件不存在或不是文件"}, 404)
+                return
+            
+            # 生成分享token
+            token, expire_timestamp = generate_share_token(file_path, expire_hours)
+            
+            # 构造分享URL
+            base_url = f"http://{self.headers.get('Host', '127.0.0.1')}"
+            share_url = f"{base_url}/api/shared_download?token={token}"
+            
+            # 格式化过期时间
+            expire_time = datetime.fromtimestamp(expire_timestamp).strftime("%Y-%m-%d %H:%M")
+            
+            self.send_json_response({
+                "success": True,
+                "share_url": share_url,
+                "expires": expire_time,
+                "expire_timestamp": expire_timestamp
+            })
+            
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+
+    def handle_shared_download(self):
+        """处理分享文件下载请求"""
+        try:
+            parsed = urllib.parse.urlparse(self.path)
+            query = urllib.parse.parse_qs(parsed.query)
+            token = query.get('token', [None])[0]
+            
+            if not token:
+                self.send_error(400, "缺少token参数")
+                return
+            
+            # 验证token
+            file_path, error = verify_share_token(token)
+            if error:
+                self.send_error(403, f"访问被拒绝: {error}")
+                return
+            
+            # 读取文件
+            full_path = os.path.join(BASE_PATH, file_path)
+            if not os.path.exists(full_path):
+                self.send_error(404, "文件不存在")
+                return
+            
+            if not os.path.isfile(full_path):
+                self.send_error(400, "不支持下载文件夹")
+                return
+            
+            # 设置响应头
+            file_size = os.path.getsize(full_path)
+            filename = os.path.basename(file_path)
+            
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Disposition', f'attachment; filename="{filename}"')
+            self.send_header('Content-Length', str(file_size))
+            self.send_header('Cache-Control', 'private, no-cache, no-store, must-revalidate')
+            self.send_header('Pragma', 'no-cache')
+            self.send_header('Expires', '0')
+            self.end_headers()
+            
+            # 流式传输文件
+            with open(full_path, 'rb') as f:
+                while True:
+                    chunk = f.read(8192)  # 8KB chunks
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    
+        except Exception as e:
+            self.send_error(500, f"下载失败: {str(e)}")
+
+    def send_json_response(self, data, status=200):
+        self.send_response(status)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.end_headers()
+        
+        json_data = json.dumps(data, ensure_ascii=False, indent=2)
+        self.wfile.write(json_data.encode('utf-8'))
+
+if __name__ == "__main__":
+    with socketserver.TCPServer(("127.0.0.1", PORT), CloudDriveHandler) as httpd:
+        print(f"Cloud Drive API Server running on port {PORT}")
+        print(f"Base path: {BASE_PATH}")
+        httpd.serve_forever()

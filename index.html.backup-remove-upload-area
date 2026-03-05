@@ -1,0 +1,1089 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Modern Drive - 私有云盘</title>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Roboto', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #f8f9fa;
+            color: #202124;
+            line-height: 1.4;
+        }
+
+        /* 登录遮罩层 */
+        .login-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 10000;
+            backdrop-filter: blur(8px);
+        }
+
+        .login-container {
+            background: white;
+            padding: 40px;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            min-width: 400px;
+            text-align: center;
+        }
+
+        .login-header {
+            margin-bottom: 32px;
+        }
+
+        .login-logo {
+            width: 64px;
+            height: 64px;
+            margin: 0 auto 16px;
+            background: linear-gradient(45deg, #4285f4, #34a853, #fbbc05, #ea4335);
+            border-radius: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        .login-title {
+            font-size: 24px;
+            margin-bottom: 8px;
+            color: #202124;
+        }
+
+        .login-subtitle {
+            color: #5f6368;
+            font-size: 14px;
+        }
+
+        .login-form {
+            display: flex;
+            flex-direction: column;
+            gap: 16px;
+        }
+
+        .login-input {
+            width: 100%;
+            height: 48px;
+            border: 1px solid #e8eaed;
+            border-radius: 8px;
+            padding: 0 16px;
+            font-size: 16px;
+            transition: border-color 0.2s;
+        }
+
+        .login-input:focus {
+            outline: none;
+            border-color: #4285f4;
+            box-shadow: 0 0 0 2px rgba(66, 133, 244, 0.2);
+        }
+
+        .login-button {
+            height: 48px;
+            background: #4285f4;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            margin-top: 16px;
+        }
+
+        .login-button:hover {
+            background: #3367d6;
+        }
+
+        .login-button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+
+        .login-error {
+            color: #ea4335;
+            font-size: 14px;
+            margin-top: 8px;
+            padding: 8px;
+            background: #fce8e6;
+            border-radius: 4px;
+        }
+
+        .login-loading {
+            display: none;
+            margin: 16px 0;
+        }
+
+        .spinner {
+            width: 24px;
+            height: 24px;
+            border: 2px solid #e8eaed;
+            border-top: 2px solid #4285f4;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .header {
+            background: white;
+            height: 64px;
+            border-bottom: 1px solid #e8eaed;
+            display: flex;
+            align-items: center;
+            padding: 0 24px;
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+        
+        .header-left {
+            display: flex;
+            align-items: center;
+            flex: 1;
+        }
+
+        .header-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+        }
+
+        .user-info {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            color: #5f6368;
+        }
+
+        .logout-btn {
+            padding: 8px 16px;
+            background: #f8f9fa;
+            border: 1px solid #e8eaed;
+            border-radius: 20px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .logout-btn:hover {
+            background: #e8eaed;
+        }
+        
+        .logo {
+            display: flex;
+            align-items: center;
+            margin-right: 32px;
+        }
+        
+        .logo-icon {
+            width: 40px;
+            height: 40px;
+            margin-right: 8px;
+            background: linear-gradient(45deg, #4285f4, #34a853, #fbbc05, #ea4335);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+        }
+        
+        .search-container {
+            flex: 1;
+            max-width: 720px;
+            position: relative;
+        }
+        
+        .search-box {
+            width: 100%;
+            height: 48px;
+            border: 1px solid #e8eaed;
+            border-radius: 24px;
+            padding: 0 20px 0 48px;
+            font-size: 16px;
+            background: #f8f9fa;
+            transition: all 0.2s;
+        }
+        
+        .search-box:focus {
+            outline: none;
+            background: white;
+            border-color: #4285f4;
+            box-shadow: 0 2px 8px rgba(66, 133, 244, 0.2);
+        }
+        
+        .search-icon {
+            position: absolute;
+            left: 16px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: #5f6368;
+        }
+        
+        .main-container {
+            display: flex;
+            min-height: calc(100vh - 64px);
+        }
+        
+        .sidebar {
+            position: fixed;
+            top: 64px;
+            left: 0;
+            width: 256px;
+            height: calc(100vh - 64px);
+            overflow-y: auto;
+            background: white;
+            border-right: 1px solid #e8eaed;
+            padding: 16px 0;
+        }
+        
+        .sidebar-item {
+            display: flex;
+            align-items: center;
+            padding: 12px 24px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            font-size: 14px;
+        }
+        
+        .sidebar-item:hover {
+            background: #f8f9fa;
+        }
+        
+        .sidebar-item.active {
+            background: #e8f0fe;
+            color: #1a73e8;
+            border-right: 3px solid #1a73e8;
+        }
+        
+        .sidebar-item i {
+            margin-right: 16px;
+            width: 20px;
+            text-align: center;
+        }
+        
+        .content {
+            margin-left: 256px;
+            padding: 24px;
+            overflow-y: auto;
+            height: calc(100vh - 64px);
+        }
+        
+        .breadcrumb {
+            display: flex;
+            align-items: center;
+            margin-bottom: 24px;
+            font-size: 14px;
+            color: #5f6368;
+        }
+        
+        .breadcrumb-item {
+            cursor: pointer;
+            transition: color 0.2s;
+        }
+        
+        .breadcrumb-item:hover {
+            color: #1a73e8;
+        }
+        
+        .breadcrumb-separator {
+            margin: 0 8px;
+            color: #9aa0a6;
+        }
+        
+        .toolbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 24px;
+        }
+        
+        .toolbar-left {
+            display: flex;
+            gap: 16px;
+        }
+        
+        .btn {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 16px;
+            border: 1px solid #e8eaed;
+            border-radius: 24px;
+            background: white;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn:hover {
+            background: #f8f9fa;
+            border-color: #d2e3fc;
+        }
+        
+        .btn-primary {
+            background: #1a73e8;
+            color: white;
+            border-color: #1a73e8;
+        }
+        
+        .btn-primary:hover {
+            background: #1557b0;
+            border-color: #1557b0;
+        }
+        
+        .file-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 16px;
+        }
+        
+        .file-item {
+            background: white;
+            border-radius: 8px;
+            border: 1px solid #e8eaed;
+            transition: all 0.2s;
+            cursor: pointer;
+            overflow: hidden;
+        }
+        
+        .file-item:hover {
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            transform: translateY(-2px);
+        }
+        
+        .file-icon {
+            height: 120px;
+            background: #f8f9fa;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 48px;
+        }
+        
+        .file-info {
+            padding: 16px;
+        }
+        
+        .file-name {
+            font-weight: 500;
+            margin-bottom: 4px;
+            word-break: break-all;
+            line-height: 1.3;
+        }
+        
+        .file-meta {
+            font-size: 12px;
+            color: #5f6368;
+            display: flex;
+            justify-content: space-between;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #5f6368;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 80px 40px;
+            color: #5f6368;
+        }
+        
+        .empty-state i {
+            font-size: 64px;
+            margin-bottom: 16px;
+            opacity: 0.5;
+        }
+        
+        .modal {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        
+        .modal-content {
+            background: white;
+            padding: 24px;
+            border-radius: 8px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+            min-width: 400px;
+        }
+        
+        .modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid #e8eaed;
+        }
+        
+        .modal-title {
+            font-size: 18px;
+            font-weight: 500;
+        }
+        
+        .modal-close {
+            cursor: pointer;
+            color: #5f6368;
+            font-size: 24px;
+        }
+        
+        .form-group {
+            margin-bottom: 16px;
+        }
+        
+        .form-label {
+            display: block;
+            margin-bottom: 8px;
+            font-size: 14px;
+            font-weight: 500;
+        }
+        
+        .form-input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #e8eaed;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        .form-input:focus {
+            outline: none;
+            border-color: #4285f4;
+            box-shadow: 0 0 0 2px rgba(66, 133, 244, 0.2);
+        }
+        
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 12px;
+            margin-top: 24px;
+        }
+        
+        .upload-area {
+            border: 2px dashed #e8eaed;
+            border-radius: 8px;
+            padding: 40px;
+            text-align: center;
+            transition: all 0.2s;
+            cursor: pointer;
+            margin-bottom: 24px;
+        }
+        
+        .upload-area:hover {
+            border-color: #4285f4;
+            background: #f8f9fa;
+        }
+        
+        .upload-area.dragover {
+            border-color: #4285f4;
+            background: #e8f0fe;
+        }
+        
+        .upload-text {
+            color: #5f6368;
+            margin-bottom: 16px;
+        }
+        
+        .upload-progress {
+            margin-top: 20px;
+        }
+        
+        .progress-bar {
+            width: 100%;
+            height: 6px;
+            background: #e8eaed;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        
+        .progress-fill {
+            height: 100%;
+            background: #4285f4;
+            transition: width 0.3s;
+            width: 0%;
+        }
+        
+        .toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+            padding: 16px 24px;
+            z-index: 1001;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            max-width: 400px;
+        }
+        
+        .toast.success {
+            border-left: 4px solid #34a853;
+        }
+        
+        .toast.error {
+            border-left: 4px solid #ea4335;
+        }
+        
+        .toast.warning {
+            border-left: 4px solid #fbbc05;
+        }
+        
+        .hidden {
+            display: none !important;
+        }
+        
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 200px;
+            }
+            
+            .content {
+                padding: 16px;
+            }
+            
+            .file-grid {
+                grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+                gap: 12px;
+            }
+            
+            .toolbar {
+                flex-direction: column;
+                gap: 16px;
+                align-items: stretch;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- 登录遮罩层 -->
+    <div id="loginOverlay" class="login-overlay">
+        <div class="login-container">
+            <div class="login-header">
+                <div class="login-logo">MD</div>
+                <h2 class="login-title">Modern Drive</h2>
+                <p class="login-subtitle">请登录以访问您的私有云盘</p>
+            </div>
+            
+            <form id="loginForm" class="login-form">
+                <input type="text" id="username" class="login-input" placeholder="用户名" value="admin" required>
+                <input type="password" id="password" class="login-input" placeholder="密码" value="drive2024" required>
+                <button type="submit" id="loginBtn" class="login-button">登录</button>
+            </form>
+            
+            <div id="loginLoading" class="login-loading">
+                <div class="spinner"></div>
+                <p>正在登录...</p>
+            </div>
+            
+            <div id="loginError" class="login-error hidden"></div>
+        </div>
+    </div>
+
+    <!-- 主界面 -->
+    <div id="mainApp" class="hidden">
+        <header class="header">
+            <div class="header-left">
+                <div class="logo">
+                    <div class="logo-icon">MD</div>
+                    <span style="font-size: 22px; font-weight: 500;">Modern Drive</span>
+                </div>
+                
+                <div class="search-container">
+                    <i class="material-icons search-icon">search</i>
+                    <input type="text" class="search-box" placeholder="搜索文件和文件夹" id="searchInput">
+                </div>
+            </div>
+
+            <div class="header-right">
+                <div class="user-info">
+                    <i class="material-icons">account_circle</i>
+                    <span id="currentUser">admin</span>
+                </div>
+                <button class="logout-btn" onclick="logout()">
+                    <i class="material-icons" style="font-size: 16px; margin-right: 4px;">logout</i>
+                    退出
+                </button>
+            </div>
+        </header>
+
+        <div class="main-container">
+            <nav class="sidebar">
+                <div class="sidebar-item active" onclick="navigateToMyFiles()">
+                    <i class="material-icons">folder</i>
+                    <span>我的文件</span>
+                </div>
+                <div class="sidebar-item" onclick="navigateToRecent()">
+                    <i class="material-icons">schedule</i>
+                    <span>最近使用</span>
+                </div>
+                <div class="sidebar-item" onclick="navigateToShared()">
+                    <i class="material-icons">people</i>
+                    <span>已分享</span>
+                </div>
+                <div class="sidebar-item" onclick="navigateToTrash()">
+                    <i class="material-icons">delete</i>
+                    <span>回收站</span>
+                </div>
+                <div class="sidebar-item" onclick="showStorageInfo()">
+                    <i class="material-icons">storage</i>
+                    <span>存储空间</span>
+                </div>
+            </nav>
+
+            <main class="content">
+                <nav class="breadcrumb" id="breadcrumb">
+                    <span class="breadcrumb-item" onclick="navigateTo('')">我的文件</span>
+                </nav>
+
+                <div class="toolbar">
+                    <div class="toolbar-left">
+                        <button class="btn btn-primary" onclick="showUploadModal()">
+                            <i class="material-icons">cloud_upload</i>
+                            <span>上传文件</span>
+                        </button>
+                        <button class="btn" onclick="showCreateFolderModal()">
+                            <i class="material-icons">create_new_folder</i>
+                            <span>新建文件夹</span>
+                        </button>
+                    </div>
+                </div>
+
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-text">
+                        <i class="material-icons" style="font-size: 48px; margin-bottom: 16px; color: #9aa0a6;">cloud_upload</i>
+                        <br>
+                        拖拽文件到此处上传，或点击选择文件
+                    </div>
+                    <input type="file" id="fileInput" multiple style="display: none;">
+                </div>
+
+                <div id="loading" class="loading">
+                    <div class="spinner"></div>
+                    <p>加载中...</p>
+                </div>
+
+                <div id="fileGrid" class="file-grid hidden"></div>
+
+                <div id="emptyState" class="empty-state hidden">
+                    <i class="material-icons">folder_open</i>
+                    <h3>此文件夹为空</h3>
+                    <p>拖拽文件到此处或点击上传按钮来添加文件</p>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- 模态框占位 -->
+    <div id="modalContainer"></div>
+
+    <script>
+        // Token认证管理
+        class AuthManager {
+            constructor() {
+                this.token = localStorage.getItem('auth_token');
+                this.username = localStorage.getItem('username');
+                this.apiBase = '/api';
+            }
+
+            isLoggedIn() {
+                return !!this.token;
+            }
+
+            async login(username, password) {
+                try {
+                    const response = await fetch(`${this.apiBase}/login`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({ username, password })
+                    });
+
+                    const data = await response.json();
+
+                    if (response.ok && data.success) {
+                        this.token = data.token;
+                        this.username = data.username;
+                        
+                        localStorage.setItem('auth_token', this.token);
+                        localStorage.setItem('username', this.username);
+                        
+                        return { success: true, data };
+                    } else {
+                        return { success: false, error: data.error || '登录失败' };
+                    }
+                } catch (error) {
+                    return { success: false, error: '网络错误，请检查连接' };
+                }
+            }
+
+            logout() {
+                this.token = null;
+                this.username = null;
+                localStorage.removeItem('auth_token');
+                localStorage.removeItem('username');
+                window.location.reload();
+            }
+
+            async refreshTokenIfNeeded() {
+                if (!this.token) return false;
+
+                try {
+                    const response = await fetch(`${this.apiBase}/refresh`, {
+                        method: 'POST',
+                        headers: {
+                            'Authorization': `Bearer ${this.token}`
+                        }
+                    });
+
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.success) {
+                            this.token = data.token;
+                            localStorage.setItem('auth_token', this.token);
+                            return true;
+                        }
+                    }
+                } catch (error) {
+                    console.log('Token刷新失败:', error);
+                }
+                return false;
+            }
+
+            getAuthHeaders() {
+                return {
+                    'Authorization': `Bearer ${this.token}`,
+                    'Content-Type': 'application/json'
+                };
+            }
+
+            async apiRequest(url, options = {}) {
+                if (!this.token) {
+                    this.showLogin();
+                    return null;
+                }
+
+                const headers = {
+                    'Authorization': `Bearer ${this.token}`,
+                    ...options.headers
+                };
+
+                try {
+                    const response = await fetch(url, { ...options, headers });
+                    
+                    if (response.status === 401) {
+                        const refreshed = await this.refreshTokenIfNeeded();
+                        if (refreshed) {
+                            // 重试请求
+                            headers['Authorization'] = `Bearer ${this.token}`;
+                            return await fetch(url, { ...options, headers });
+                        } else {
+                            this.logout();
+                            return null;
+                        }
+                    }
+
+                    return response;
+                } catch (error) {
+                    console.error('API请求失败:', error);
+                    throw error;
+                }
+            }
+
+            showLogin() {
+                document.getElementById('loginOverlay').classList.remove('hidden');
+                document.getElementById('mainApp').classList.add('hidden');
+            }
+
+            hideLogin() {
+                document.getElementById('loginOverlay').classList.add('hidden');
+                document.getElementById('mainApp').classList.remove('hidden');
+                document.getElementById('currentUser').textContent = this.username || 'admin';
+            }
+        }
+
+        // 全局认证管理器
+        const auth = new AuthManager();
+
+        // 文件管理器主逻辑
+        let currentPath = '';
+        let files = [];
+
+        // 页面加载时检查登录状态
+        document.addEventListener('DOMContentLoaded', function() {
+            if (auth.isLoggedIn()) {
+                auth.hideLogin();
+                loadFiles();
+            } else {
+                auth.showLogin();
+            }
+
+            // 登录表单处理
+            document.getElementById('loginForm').addEventListener('submit', handleLogin);
+        });
+
+        async function handleLogin(event) {
+            event.preventDefault();
+            
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            const errorDiv = document.getElementById('loginError');
+            const loadingDiv = document.getElementById('loginLoading');
+            const loginBtn = document.getElementById('loginBtn');
+
+            if (!username || !password) {
+                showError('请输入用户名和密码');
+                return;
+            }
+
+            // 显示加载状态
+            loginBtn.disabled = true;
+            loadingDiv.classList.remove('hidden');
+            errorDiv.classList.add('hidden');
+
+            try {
+                const result = await auth.login(username, password);
+                
+                if (result.success) {
+                    auth.hideLogin();
+                    showToast('登录成功', 'success');
+                    loadFiles();
+                } else {
+                    showError(result.error);
+                }
+            } catch (error) {
+                showError('登录失败，请重试');
+            } finally {
+                loginBtn.disabled = false;
+                loadingDiv.classList.add('hidden');
+            }
+
+            function showError(message) {
+                errorDiv.textContent = message;
+                errorDiv.classList.remove('hidden');
+            }
+        }
+
+        function logout() {
+            if (confirm('确定要退出登录吗？')) {
+                auth.logout();
+            }
+        }
+
+        async function loadFiles(path = '') {
+            currentPath = path;
+            
+            try {
+                const response = await auth.apiRequest(`/api/files?path=${encodeURIComponent(path)}`);
+                if (!response) return;
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    files = data.items;
+                    renderFiles();
+                    updateBreadcrumb(path);
+                } else {
+                    throw new Error(data.error || '加载文件失败');
+                }
+            } catch (error) {
+                console.error('加载文件失败:', error);
+                showToast('加载文件失败: ' + error.message, 'error');
+            } finally {
+                document.getElementById('loading').classList.add('hidden');
+            }
+        }
+
+        function renderFiles() {
+            const grid = document.getElementById('fileGrid');
+            const empty = document.getElementById('emptyState');
+            
+            if (files.length === 0) {
+                grid.classList.add('hidden');
+                empty.classList.remove('hidden');
+                return;
+            }
+            
+            empty.classList.add('hidden');
+            grid.classList.remove('hidden');
+            
+            grid.innerHTML = files.map(file => `
+                <div class="file-item" onclick="handleFileClick('${escapeHtml(file.name)}', '${file.type}')">
+                    <div class="file-icon">
+                        ${file.icon || (file.type === 'folder' ? '📁' : '📄')}
+                    </div>
+                    <div class="file-info">
+                        <div class="file-name">${escapeHtml(file.name)}</div>
+                        <div class="file-meta">
+                            <span>${file.size || ''}</span>
+                            <span>${file.modified || ''}</span>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function handleFileClick(filename, type) {
+            if (type === 'folder') {
+                const newPath = currentPath ? `${currentPath}/${filename}` : filename;
+                loadFiles(newPath);
+            } else {
+                // 处理文件点击 - 可以添加预览或下载功能
+                showToast(`点击了文件: ${filename}`, 'success');
+            }
+        }
+
+        function updateBreadcrumb(path) {
+            const breadcrumb = document.getElementById('breadcrumb');
+            const parts = path ? path.split('/').filter(p => p) : [];
+            
+            let html = '<span class="breadcrumb-item" onclick="navigateTo(\'\')">我的文件</span>';
+            
+            let currentPath = '';
+            for (let i = 0; i < parts.length; i++) {
+                currentPath += (currentPath ? '/' : '') + parts[i];
+                html += `<span class="breadcrumb-separator">›</span>`;
+                html += `<span class="breadcrumb-item" onclick="navigateTo('${currentPath}')">${escapeHtml(parts[i])}</span>`;
+            }
+            
+            breadcrumb.innerHTML = html;
+        }
+
+        function navigateTo(path) {
+            loadFiles(path);
+        }
+
+        // 上传功能
+        function showUploadModal() {
+            document.getElementById('fileInput').click();
+        }
+
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            const files = Array.from(e.target.files);
+            if (files.length > 0) {
+                uploadFiles(files);
+            }
+        });
+
+        async function uploadFiles(files) {
+            for (const file of files) {
+                await uploadSingleFile(file);
+            }
+            // 上传完成后刷新列表
+            loadFiles(currentPath);
+        }
+
+        async function uploadSingleFile(file) {
+            try {
+                showToast(`正在上传: ${file.name}`, 'success');
+                
+                const url = `/api/upload?filename=${encodeURIComponent(file.name)}&path=${encodeURIComponent(currentPath)}`;
+                
+                const response = await auth.apiRequest(url, {
+                    method: 'POST',
+                    headers: {
+                        'Authorization': `Bearer ${auth.token}`,
+                        'Content-Type': 'application/octet-stream'
+                    },
+                    body: file
+                });
+
+                if (!response) return;
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    showToast(`上传成功: ${data.filename}`, 'success');
+                } else {
+                    throw new Error(data.error || '上传失败');
+                }
+            } catch (error) {
+                console.error('上传失败:', error);
+                showToast(`上传失败: ${file.name} - ${error.message}`, 'error');
+            }
+        }
+
+        // 工具函数
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function showToast(message, type = 'success') {
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.innerHTML = `
+                <i class="material-icons">${type === 'success' ? 'check_circle' : type === 'error' ? 'error' : 'warning'}</i>
+                <span>${message}</span>
+            `;
+            
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 3000);
+        }
+
+        // 其他导航函数
+        function navigateToMyFiles() {
+            loadFiles('');
+        }
+
+        function navigateToRecent() {
+            showToast('最近使用功能开发中', 'warning');
+        }
+
+        function navigateToShared() {
+            showToast('已分享功能开发中', 'warning');
+        }
+
+        function navigateToTrash() {
+            showToast('回收站功能开发中', 'warning');
+        }
+
+        function showStorageInfo() {
+            showToast('存储信息功能开发中', 'warning');
+        }
+
+        function showCreateFolderModal() {
+            showToast('新建文件夹功能开发中', 'warning');
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,997 @@
+#!/usr/bin/env python3
+import http.server
+import socketserver
+import json
+import os
+import shutil
+import urllib.parse
+from datetime import datetime
+import tempfile
+import hmac
+import hashlib
+import base64
+import time
+import secrets
+
+PORT = 8091
+BASE_PATH = "/root/filecloud"
+SECRET_KEY_FILE = "/var/www/modern-drive/secret.key"
+
+# Token认证配置
+TOKEN_EXPIRE_HOURS = 24
+TOKEN_REFRESH_THRESHOLD_HOURS = 2
+
+# 默认用户凭据
+DEFAULT_USERS = {
+    'admin': 'drive2024'
+}
+
+def get_or_create_secret_key():
+    """获取或创建HMAC密钥"""
+    if os.path.exists(SECRET_KEY_FILE):
+        with open(SECRET_KEY_FILE, 'rb') as f:
+            return f.read()
+    else:
+        # 生成256位随机密钥
+        secret = os.urandom(32)
+        with open(SECRET_KEY_FILE, 'wb') as f:
+            f.write(secret)
+        os.chmod(SECRET_KEY_FILE, 0o600)  # 只有owner可读写
+        return secret
+
+class TokenAuthSystem:
+    """Token认证系统"""
+    
+    def __init__(self, secret_key):
+        self.secret_key = secret_key
+    
+    def verify_password(self, username, password):
+        """验证用户名密码"""
+        return DEFAULT_USERS.get(username) == password
+    
+    def generate_token(self, username):
+        """生成Token"""
+        nonce = secrets.token_hex(16)
+        expire_timestamp = int(time.time() + TOKEN_EXPIRE_HOURS * 3600)
+        
+        payload = f"{username}|{expire_timestamp}|{nonce}"
+        payload_b64 = base64.urlsafe_b64encode(payload.encode()).decode()
+        
+        signature = hmac.new(
+            self.secret_key,
+            payload.encode(),
+            hashlib.sha256
+        ).hexdigest()
+        
+        token = f"{payload_b64}.{signature}"
+        
+        return {
+            'token': token,
+            'expire_timestamp': expire_timestamp,
+            'expire_time': datetime.fromtimestamp(expire_timestamp).strftime('%Y-%m-%d %H:%M:%S'),
+            'username': username
+        }
+    
+    def verify_token(self, token):
+        """验证Token"""
+        try:
+            if '.' not in token:
+                return None, "Token格式错误"
+            
+            payload_b64, signature = token.split('.', 1)
+            payload = base64.urlsafe_b64decode(payload_b64).decode()
+            
+            if payload.count('|') != 2:
+                return None, "Payload格式错误"
+            
+            username, expire_timestamp, nonce = payload.split('|')
+            
+            if time.time() > int(expire_timestamp):
+                return None, "Token已过期"
+            
+            expected_signature = hmac.new(
+                self.secret_key,
+                payload.encode(),
+                hashlib.sha256
+            ).hexdigest()
+            
+            if not hmac.compare_digest(signature, expected_signature):
+                return None, "签名验证失败"
+            
+            return {
+                'username': username,
+                'expire_timestamp': int(expire_timestamp),
+                'nonce': nonce,
+                'remaining_hours': (int(expire_timestamp) - time.time()) / 3600
+            }, None
+        
+        except Exception as e:
+            return None, f"Token解析失败: {str(e)}"
+    
+    def should_refresh_token(self, token_info):
+        """判断是否需要刷新Token"""
+        if not token_info:
+            return False
+        return token_info['remaining_hours'] < TOKEN_REFRESH_THRESHOLD_HOURS
+
+def generate_share_token(file_path, expire_hours):
+    """生成分享token"""
+    expire_timestamp = int(time.time() + expire_hours * 3600)
+    payload = f"{file_path}|{expire_timestamp}"
+    payload_b64 = base64.urlsafe_b64encode(payload.encode()).decode()
+    
+    secret = get_or_create_secret_key()
+    signature = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
+    
+    token = f"{payload_b64}.{signature}"
+    return token, expire_timestamp
+
+def verify_share_token(token):
+    """验证分享token"""
+    try:
+        if '.' not in token:
+            return None, "Token格式错误"
+            
+        payload_b64, signature = token.split('.', 1)
+        payload = base64.urlsafe_b64decode(payload_b64).decode()
+        
+        if '|' not in payload:
+            return None, "Payload格式错误"
+            
+        file_path, expire_timestamp = payload.split('|', 1)
+        
+        if time.time() > int(expire_timestamp):
+            return None, "链接已过期"
+        
+        secret = get_or_create_secret_key()
+        expected_signature = hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest()
+        
+        if not hmac.compare_digest(signature, expected_signature):
+            return None, "签名验证失败"
+            
+        if not is_safe_path(file_path):
+            return None, "文件路径不安全"
+            
+        return file_path, None
+        
+    except Exception as e:
+        return None, f"Token解析失败: {str(e)}"
+
+def is_safe_path(file_path):
+    """检查文件路径安全性"""
+    if not file_path:
+        return True
+    
+    if '..' in file_path or file_path.startswith('/') or file_path.startswith('\\'):
+        return False
+    
+    normalized = os.path.normpath(file_path).replace('\\', '/')
+    full_path = os.path.join(BASE_PATH, file_path)
+    
+    try:
+        real_path = os.path.realpath(full_path)
+        base_real = os.path.realpath(BASE_PATH)
+        return real_path.startswith(base_real)
+    except:
+        return False
+
+def sanitize_filename(filename):
+    """清理文件名"""
+    if not filename:
+        return ""
+    
+    filename = os.path.basename(filename)
+    dangerous_chars = ['..', '/', '\\', '<', '>', '|', '&', ';', '$', '`']
+    
+    for char in dangerous_chars:
+        filename = filename.replace(char, '_')
+    
+    return filename
+
+class CloudDriveHandler(http.server.SimpleHTTPRequestHandler):
+    def __init__(self, *args, **kwargs):
+        self.auth_system = TokenAuthSystem(get_or_create_secret_key())
+        super().__init__(*args, **kwargs)
+    
+    def verify_auth(self):
+        """统一Token验证"""
+        auth_header = self.headers.get('Authorization', '')
+        
+        if not auth_header.startswith('Bearer '):
+            self.send_json_response({"error": "Missing authorization header", "need_login": True}, 401)
+            return None
+        
+        token = auth_header[7:]  # 移除 "Bearer " 前缀
+        token_info, error = self.auth_system.verify_token(token)
+        
+        if error:
+            self.send_json_response({"error": error, "need_login": True}, 401)
+            return None
+        
+        return token_info
+    
+    def do_GET(self):
+        if self.path.startswith("/api/files"):
+            self.handle_files_api()
+        elif self.path.startswith("/api/storage"):
+            self.handle_storage_api()
+        elif self.path.startswith("/api/shared_download"):
+            self.handle_shared_download()
+        elif self.path == "/api/status":
+            self.handle_status_api()
+        else:
+            self.send_error(404, "API endpoint not found")
+    
+    def do_POST(self):
+        if self.path.startswith("/api/login"):
+            self.handle_login()
+        elif self.path.startswith("/api/refresh"):
+            self.handle_refresh_token()
+        elif self.path.startswith("/api/logout"):
+            self.handle_logout()
+        elif self.path.startswith("/api/upload"):
+            self.handle_upload_binary_stream()
+        elif self.path.startswith("/api/folder"):
+            self.handle_create_folder()
+        elif self.path.startswith("/api/rename"):
+            self.handle_rename()
+        elif self.path.startswith("/api/search"):
+            self.handle_search()
+        elif self.path.startswith("/api/share"):
+            self.handle_share()
+        elif self.path.startswith("/api/delete"):
+            self.handle_delete()
+        elif self.path.startswith("/api/batch-delete"):
+            self.handle_batch_delete()
+        else:
+            self.send_error(404, "API endpoint not found")
+    
+    def handle_status_api(self):
+        """公开的状态检查API (无需认证)"""
+        try:
+            self.send_json_response({
+                "success": True,
+                "service": "Modern Drive API",
+                "version": "2.0.0-token-auth",
+                "auth_method": "token_based",
+                "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            })
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def handle_login(self):
+        """登录处理"""
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            username = data.get('username', '').strip()
+            password = data.get('password', '').strip()
+            
+            if not username or not password:
+                self.send_json_response({"error": "用户名和密码不能为空"}, 400)
+                return
+            
+            # 验证用户名密码
+            if not self.auth_system.verify_password(username, password):
+                self.send_json_response({"error": "用户名或密码错误"}, 401)
+                return
+            
+            # 生成Token
+            token_data = self.auth_system.generate_token(username)
+            
+            self.send_json_response({
+                "success": True,
+                "message": "登录成功",
+                "token": token_data['token'],
+                "username": token_data['username'],
+                "expire_time": token_data['expire_time']
+            })
+            
+        except json.JSONDecodeError:
+            self.send_json_response({"error": "JSON格式错误"}, 400)
+        except Exception as e:
+            self.send_json_response({"error": f"登录失败: {str(e)}"}, 500)
+    
+    def handle_refresh_token(self):
+        """Token刷新"""
+        try:
+            auth_header = self.headers.get('Authorization', '')
+            
+            if not auth_header.startswith('Bearer '):
+                self.send_json_response({"error": "Missing authorization header"}, 401)
+                return
+            
+            token = auth_header[7:]
+            token_info, error = self.auth_system.verify_token(token)
+            
+            if error:
+                self.send_json_response({"error": error, "need_login": True}, 401)
+                return
+            
+            # 生成新Token
+            new_token_data = self.auth_system.generate_token(token_info['username'])
+            
+            self.send_json_response({
+                "success": True,
+                "token": new_token_data['token'],
+                "expire_time": new_token_data['expire_time']
+            })
+            
+        except Exception as e:
+            self.send_json_response({"error": f"Token刷新失败: {str(e)}"}, 500)
+    
+    def handle_logout(self):
+        """退出登录 (客户端需要清理本地Token)"""
+        self.send_json_response({
+            "success": True,
+            "message": "退出成功，请清理本地Token"
+        })
+    
+    def handle_upload_binary_stream(self):
+        """🚀 Binary Stream零内存上传"""
+        try:
+            # Token验证
+            token_info = self.verify_auth()
+            if not token_info:
+                return  # 错误已发送
+            
+            # 解析参数
+            parsed = urllib.parse.urlparse(self.path)
+            query = urllib.parse.parse_qs(parsed.query)
+            
+            filename = query.get('filename', [''])[0]
+            upload_path = query.get('path', [''])[0].lstrip('/')
+            
+            if not filename:
+                self.send_json_response({"error": "filename参数必须"}, 400)
+                return
+            
+            # 安全检查
+            if not is_safe_path(upload_path):
+                self.send_json_response({"error": "上传路径不安全"}, 403)
+                return
+            
+            safe_filename = sanitize_filename(filename)
+            if not safe_filename:
+                self.send_json_response({"error": "无效文件名"}, 400)
+                return
+            
+            # 获取文件大小
+            content_length = int(self.headers.get('Content-Length', 0))
+            if content_length == 0:
+                self.send_json_response({"error": "没有上传内容"}, 400)
+                return
+            
+            # 大小限制 (10GB)
+            max_upload_size = 10 * 1024 * 1024 * 1024
+            if content_length > max_upload_size:
+                self.send_json_response({"error": "文件太大 (最大10GB)"}, 413)
+                return
+            
+            # 确定目标路径
+            upload_dir = os.path.join(BASE_PATH, upload_path) if upload_path else BASE_PATH
+            if not os.path.exists(upload_dir):
+                os.makedirs(upload_dir, exist_ok=True)
+            
+            # 生成唯一文件路径
+            target_path = os.path.join(upload_dir, safe_filename)
+            target_path = self.get_safe_filename(safe_filename, upload_dir)
+            final_filename = os.path.basename(target_path)
+            
+            # 🚀 真正的零内存增长流式写入
+            bytes_written = 0
+            chunk_size = 8192  # 8KB chunks
+            
+            with open(target_path, 'wb') as f:
+                remaining = content_length
+                
+                while remaining > 0:
+                    read_size = min(chunk_size, remaining)
+                    chunk = self.rfile.read(read_size)
+                    
+                    if not chunk:
+                        break
+                    
+                    f.write(chunk)
+                    bytes_written += len(chunk)
+                    remaining -= len(chunk)
+            
+            # 验证完整性
+            if bytes_written != content_length:
+                os.unlink(target_path)
+                self.send_json_response({"error": f"上传不完整: {bytes_written}/{content_length} bytes"}, 400)
+                return
+            
+            self.send_json_response({
+                "success": True,
+                "filename": final_filename,
+                "size": bytes_written,
+                "size_formatted": self.format_file_size(bytes_written),
+                "path": upload_path,
+                "method": "binary_stream",
+                "uploaded_by": token_info['username']
+            })
+            
+        except Exception as e:
+            # 清理不完整文件
+            try:
+                if 'target_path' in locals() and os.path.exists(target_path):
+                    os.unlink(target_path)
+            except:
+                pass
+            
+            self.send_json_response({"error": f"上传失败: {str(e)}"}, 500)
+    
+    def handle_files_api(self):
+        """获取文件列表 (需要认证)"""
+        token_info = self.verify_auth()
+        if not token_info:
+            return
+        
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        path = query.get('path', [''])[0].lstrip('/')
+        
+        if not is_safe_path(path):
+            self.send_json_response({"error": "Path not safe"}, 403)
+            return
+        
+        target_dir = os.path.join(BASE_PATH, path)
+        
+        if not os.path.exists(target_dir) or not os.path.isdir(target_dir):
+            self.send_json_response({"error": "Directory not found"}, 404)
+            return
+        
+        try:
+            items = []
+            for item in os.listdir(target_dir):
+                item_path = os.path.join(target_dir, item)
+                if os.path.isfile(item_path):
+                    stat = os.stat(item_path)
+                    items.append({
+                        "name": item,
+                        "type": "file",
+                        "size": self.format_file_size(stat.st_size),
+                        "size_bytes": stat.st_size,
+                        "modified": datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M'),
+                        "icon": self.get_file_icon(item)
+                    })
+                elif os.path.isdir(item_path):
+                    stat = os.stat(item_path)
+                    items.append({
+                        "name": item,
+                        "type": "folder",
+                        "size": "",
+                        "modified": datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M'),
+                        "icon": "📁"
+                    })
+            
+            items.sort(key=lambda x: (x["type"] == "file", x["name"].lower()))
+            
+            self.send_json_response({
+                "success": True,
+                "items": items,
+                "path": path,
+                "user": token_info['username']
+            })
+            
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def handle_storage_api(self):
+        """获取存储信息 (需要认证)"""
+        token_info = self.verify_auth()
+        if not token_info:
+            return
+        
+        try:
+            statvfs = os.statvfs(BASE_PATH)
+            total_space = statvfs.f_frsize * statvfs.f_blocks
+            free_space = statvfs.f_frsize * statvfs.f_bavail
+            used_space = total_space - free_space
+            
+            file_count = 0
+            folder_count = 0
+            for root, dirs, files in os.walk(BASE_PATH):
+                file_count += len(files)
+                folder_count += len(dirs)
+            
+            self.send_json_response({
+                "success": True,
+                "total": total_space,
+                "used": used_space,
+                "free": free_space,
+                "total_formatted": self.format_file_size(total_space),
+                "used_formatted": self.format_file_size(used_space),
+                "free_formatted": self.format_file_size(free_space),
+                "files": file_count,
+                "folders": folder_count,
+                "user": token_info['username']
+            })
+            
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def handle_shared_download(self):
+        """处理分享链接下载 (无需认证)"""
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+        token = query.get('token', [''])[0]
+        
+        if not token:
+            self.send_error(400, "Missing token")
+            return
+        
+        file_path, error = verify_share_token(token)
+        if error:
+            self.send_error(403, f"Invalid token: {error}")
+            return
+        
+        full_path = os.path.join(BASE_PATH, file_path)
+        
+        if not os.path.exists(full_path) or not os.path.isfile(full_path):
+            self.send_error(404, "File not found")
+            return
+        
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Disposition', f'attachment; filename="{os.path.basename(file_path)}"')
+            self.send_header('Content-Length', str(os.path.getsize(full_path)))
+            self.end_headers()
+            
+            with open(full_path, 'rb') as f:
+                while True:
+                    chunk = f.read(8192)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    
+        except Exception as e:
+            self.send_error(500, f"Download failed: {str(e)}")
+    
+    # 其他API处理函数 (都需要添加Token验证)
+    def handle_create_folder(self):
+        """创建文件夹 (需要认证)"""
+        token_info = self.verify_auth()
+        if not token_info:
+            return
+        
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            folder_name = data.get('name', '').strip()
+            path = data.get('path', '').lstrip('/')
+            
+            if not folder_name:
+                self.send_json_response({"error": "Folder name required"}, 400)
+                return
+            
+            safe_folder_name = sanitize_filename(folder_name)
+            if not safe_folder_name:
+                self.send_json_response({"error": "Invalid folder name"}, 400)
+                return
+            
+            full_target_path = os.path.join(path, safe_folder_name) if path else safe_folder_name
+            if not is_safe_path(full_target_path):
+                self.send_json_response({"error": "Unsafe folder path"}, 403)
+                return
+            
+            target_dir = os.path.join(BASE_PATH, path) if path else BASE_PATH
+            folder_path = os.path.join(target_dir, safe_folder_name)
+            folder_path = self.get_safe_filename(safe_folder_name, target_dir, is_folder=True)
+            
+            os.makedirs(folder_path, exist_ok=False)
+            
+            self.send_json_response({
+                "success": True,
+                "folder": os.path.basename(folder_path),
+                "created_by": token_info['username']
+            })
+            
+        except FileExistsError:
+            self.send_json_response({"error": "Folder already exists"}, 409)
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def handle_rename(self):
+        """重命名 (需要认证)"""
+        token_info = self.verify_auth()
+        if not token_info:
+            return
+        
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            old_name = data.get('old_name', '').strip()
+            new_name = data.get('new_name', '').strip()
+            path = data.get('path', '').lstrip('/')
+            
+            if not old_name or not new_name:
+                self.send_json_response({"error": "Both old and new names required"}, 400)
+                return
+            
+            safe_new_name = sanitize_filename(new_name)
+            if not safe_new_name:
+                self.send_json_response({"error": "Invalid new name"}, 400)
+                return
+            
+            if not is_safe_path(path):
+                self.send_json_response({"error": "Unsafe path"}, 403)
+                return
+            
+            base_dir = os.path.join(BASE_PATH, path) if path else BASE_PATH
+            old_path = os.path.join(base_dir, old_name)
+            new_path = os.path.join(base_dir, safe_new_name)
+            
+            if not os.path.exists(old_path):
+                self.send_json_response({"error": "File not found"}, 404)
+                return
+            
+            try:
+                old_real = os.path.realpath(old_path)
+                base_real = os.path.realpath(BASE_PATH)
+                if not old_real.startswith(base_real):
+                    self.send_json_response({"error": "Unsafe source path"}, 403)
+                    return
+            except:
+                self.send_json_response({"error": "Path resolution failed"}, 500)
+                return
+            
+            if os.path.exists(new_path):
+                self.send_json_response({"error": "Target name already exists"}, 409)
+                return
+            
+            os.rename(old_path, new_path)
+            
+            self.send_json_response({
+                "success": True,
+                "old_name": old_name,
+                "new_name": safe_new_name,
+                "renamed_by": token_info['username']
+            })
+            
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def handle_search(self):
+        """搜索 (需要认证)"""
+        token_info = self.verify_auth()
+        if not token_info:
+            return
+        
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            query = data.get('query', '').strip().lower()
+            if not query:
+                self.send_json_response({"error": "Search query required"}, 400)
+                return
+            
+            results = []
+            
+            for root, dirs, files in os.walk(BASE_PATH):
+                try:
+                    rel_root = os.path.relpath(root, BASE_PATH)
+                    if rel_root == '.':
+                        rel_root = ''
+                except:
+                    continue
+                
+                for dirname in dirs:
+                    if query in dirname.lower():
+                        results.append({
+                            "name": dirname,
+                            "type": "folder",
+                            "path": rel_root,
+                            "icon": "📁"
+                        })
+                
+                for filename in files:
+                    if query in filename.lower():
+                        file_path = os.path.join(root, filename)
+                        try:
+                            stat = os.stat(file_path)
+                            results.append({
+                                "name": filename,
+                                "type": "file",
+                                "path": rel_root,
+                                "size": self.format_file_size(stat.st_size),
+                                "modified": datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M'),
+                                "icon": self.get_file_icon(filename)
+                            })
+                        except:
+                            continue
+            
+            if len(results) > 100:
+                results = results[:100]
+            
+            self.send_json_response({
+                "success": True,
+                "results": results,
+                "count": len(results),
+                "query": query,
+                "searched_by": token_info['username']
+            })
+            
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def handle_share(self):
+        """生成分享链接 (需要认证)"""
+        token_info = self.verify_auth()
+        if not token_info:
+            return
+        
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            file_path = data.get('file_path', '').strip()
+            expire_hours = data.get('expire_hours', 24)
+            
+            if not file_path:
+                self.send_json_response({"error": "File path required"}, 400)
+                return
+            
+            if not is_safe_path(file_path):
+                self.send_json_response({"error": "Unsafe file path"}, 403)
+                return
+            
+            full_path = os.path.join(BASE_PATH, file_path)
+            if not os.path.exists(full_path) or not os.path.isfile(full_path):
+                self.send_json_response({"error": "File not found"}, 404)
+                return
+            
+            if expire_hours < 1 or expire_hours > 720:
+                self.send_json_response({"error": "Invalid expire time (1-720 hours)"}, 400)
+                return
+            
+            token, expire_timestamp = generate_share_token(file_path, expire_hours)
+            share_url = f"http://{self.headers.get('Host', 'localhost')}/api/shared_download?token={token}"
+            expire_time = datetime.fromtimestamp(expire_timestamp).strftime('%Y-%m-%d %H:%M')
+            
+            self.send_json_response({
+                "success": True,
+                "share_url": share_url,
+                "token": token,
+                "expires": expire_time,
+                "expire_hours": expire_hours,
+                "shared_by": token_info['username']
+            })
+            
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def handle_delete(self):
+        """删除 (需要认证)"""
+        token_info = self.verify_auth()
+        if not token_info:
+            return
+        
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            name = data.get('name', '').strip()
+            path = data.get('path', '').lstrip('/')
+            
+            if not name:
+                self.send_json_response({"error": "Name required"}, 400)
+                return
+            
+            if not is_safe_path(path):
+                self.send_json_response({"error": "Unsafe path"}, 403)
+                return
+            
+            safe_name = sanitize_filename(name)
+            if safe_name != name:
+                self.send_json_response({"error": "Unsafe filename"}, 403)
+                return
+            
+            base_dir = os.path.join(BASE_PATH, path) if path else BASE_PATH
+            target_path = os.path.join(base_dir, name)
+            
+            if not os.path.exists(target_path):
+                self.send_json_response({"error": "File not found"}, 404)
+                return
+            
+            try:
+                real_path = os.path.realpath(target_path)
+                base_real = os.path.realpath(BASE_PATH)
+                if not real_path.startswith(base_real):
+                    self.send_json_response({"error": "Unsafe delete target"}, 403)
+                    return
+            except:
+                self.send_json_response({"error": "Path resolution failed"}, 500)
+                return
+            
+            if os.path.isfile(target_path):
+                os.remove(target_path)
+            elif os.path.isdir(target_path):
+                shutil.rmtree(target_path)
+            else:
+                self.send_json_response({"error": "Unknown file type"}, 400)
+                return
+            
+            self.send_json_response({
+                "success": True,
+                "deleted": name,
+                "deleted_by": token_info['username']
+            })
+            
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    def handle_batch_delete(self):
+        """批量删除 (需要认证)"""
+        token_info = self.verify_auth()
+        if not token_info:
+            return
+        
+        try:
+            content_length = int(self.headers.get('Content-Length', 0))
+            post_data = self.rfile.read(content_length).decode('utf-8')
+            data = json.loads(post_data)
+            
+            items = data.get('items', [])
+            path = data.get('path', '').lstrip('/')
+            
+            if not items:
+                self.send_json_response({"error": "No items to delete"}, 400)
+                return
+            
+            if not is_safe_path(path):
+                self.send_json_response({"error": "Unsafe path"}, 403)
+                return
+            
+            base_dir = os.path.join(BASE_PATH, path) if path else BASE_PATH
+            deleted_items = []
+            failed_items = []
+            
+            for item_name in items:
+                try:
+                    safe_name = sanitize_filename(item_name)
+                    if safe_name != item_name:
+                        failed_items.append({"name": item_name, "error": "Unsafe filename"})
+                        continue
+                    
+                    target_path = os.path.join(base_dir, item_name)
+                    
+                    if not os.path.exists(target_path):
+                        failed_items.append({"name": item_name, "error": "File not found"})
+                        continue
+                    
+                    try:
+                        real_path = os.path.realpath(target_path)
+                        base_real = os.path.realpath(BASE_PATH)
+                        if not real_path.startswith(base_real):
+                            failed_items.append({"name": item_name, "error": "Unsafe path"})
+                            continue
+                    except:
+                        failed_items.append({"name": item_name, "error": "Path resolution failed"})
+                        continue
+                    
+                    if os.path.isfile(target_path):
+                        os.remove(target_path)
+                        deleted_items.append(item_name)
+                    elif os.path.isdir(target_path):
+                        shutil.rmtree(target_path)
+                        deleted_items.append(item_name)
+                    else:
+                        failed_items.append({"name": item_name, "error": "Unknown file type"})
+                        
+                except Exception as e:
+                    failed_items.append({"name": item_name, "error": str(e)})
+            
+            self.send_json_response({
+                "success": True,
+                "deleted": deleted_items,
+                "failed": failed_items,
+                "deleted_count": len(deleted_items),
+                "failed_count": len(failed_items),
+                "deleted_by": token_info['username']
+            })
+            
+        except Exception as e:
+            self.send_json_response({"error": str(e)}, 500)
+    
+    # 辅助函数
+    def get_safe_filename(self, filename, directory, is_folder=False):
+        """生成安全的唯一文件名"""
+        base_path = os.path.join(directory, filename)
+        
+        if not os.path.exists(base_path):
+            return base_path
+        
+        name, ext = os.path.splitext(filename) if not is_folder else (filename, '')
+        counter = 1
+        
+        while True:
+            if is_folder:
+                new_name = f"{name}({counter})"
+            else:
+                new_name = f"{name}({counter}){ext}"
+            
+            new_path = os.path.join(directory, new_name)
+            if not os.path.exists(new_path):
+                return new_path
+            
+            counter += 1
+            if counter > 1000:
+                break
+        
+        timestamp = int(datetime.now().timestamp())
+        if is_folder:
+            final_name = f"{name}_{timestamp}"
+        else:
+            final_name = f"{name}_{timestamp}{ext}"
+        
+        return os.path.join(directory, final_name)
+    
+    def send_json_response(self, data, status_code=200):
+        """发送JSON响应"""
+        self.send_response(status_code)
+        self.send_header('Content-Type', 'application/json; charset=utf-8')
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        self.send_header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        self.end_headers()
+        
+        json_data = json.dumps(data, ensure_ascii=False, indent=2)
+        self.wfile.write(json_data.encode('utf-8'))
+    
+    def format_file_size(self, size):
+        """格式化文件大小"""
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size < 1024.0:
+                return f"{size:.1f} {unit}"
+            size /= 1024.0
+        return f"{size:.1f} PB"
+    
+    def get_file_icon(self, filename):
+        """根据文件扩展名返回图标"""
+        ext = os.path.splitext(filename)[1].lower()
+        
+        image_exts = {'.jpg', '.jpeg', '.png', '.gif', '.bmp', '.svg', '.webp'}
+        video_exts = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm'}
+        audio_exts = {'.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a'}
+        doc_exts = {'.doc', '.docx', '.pdf', '.txt', '.rtf', '.odt'}
+        code_exts = {'.py', '.js', '.html', '.css', '.java', '.cpp', '.c', '.php', '.rb', '.go'}
+        archive_exts = {'.zip', '.rar', '.7z', '.tar', '.gz', '.bz2'}
+        
+        if ext in image_exts:
+            return '🖼️'
+        elif ext in video_exts:
+            return '🎥'
+        elif ext in audio_exts:
+            return '🎵'
+        elif ext in doc_exts:
+            return '📄'
+        elif ext in code_exts:
+            return '💻'
+        elif ext in archive_exts:
+            return '📦'
+        else:
+            return '📄'
+
+
+if __name__ == "__main__":
+    with socketserver.ThreadingTCPServer(("127.0.0.1", PORT), CloudDriveHandler) as httpd:
+        print(f"🚀 Modern Drive API v2.0.0 with Token Auth")
+        print(f"🔐 Token-based authentication enabled")
+        print(f"⚡ Binary Stream zero-memory upload enabled")
+        print(f"🛡️ Pentagon-grade security maintained")
+        print(f"📁 Base path: {BASE_PATH}")
+        print(f"🌐 Server running on port {PORT}")
+        httpd.serve_forever()

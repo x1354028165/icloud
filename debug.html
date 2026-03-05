@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>文件列表调试页面</title>
+    <style>
+        body { font-family: Arial; margin: 20px; }
+        .file { margin: 5px 0; padding: 10px; border: 1px solid #ddd; }
+        .folder { background: #e8f5e8; }
+        .file-item { background: #f8f9fa; }
+    </style>
+</head>
+<body>
+    <h2>文件列表调试页面</h2>
+    <p>正在加载文件...</p>
+    <div id="files"></div>
+    
+    <script>
+    // 使用Basic Auth获取文件列表
+    fetch('/api/files', {
+        method: 'GET',
+        headers: {
+            'Authorization': 'Basic ' + btoa('admin:drive2024')
+        }
+    })
+    .then(response => response.json())
+    .then(data => {
+        const filesDiv = document.getElementById('files');
+        if (data.success && data.items) {
+            let html = '<h3>找到 ' + data.items.length + ' 个项目：</h3>';
+            data.items.forEach(item => {
+                const className = item.type === 'folder' ? 'file folder' : 'file file-item';
+                html += '<div class="' + className + '">';
+                html += '<strong>' + item.name + '</strong> (' + item.type + ')';
+                if (item.size) html += ' - ' + item.size;
+                if (item.modified) html += ' - ' + item.modified;
+                html += '</div>';
+            });
+            filesDiv.innerHTML = html;
+        } else {
+            filesDiv.innerHTML = '<p style="color: red;">❌ 无法加载文件: ' + (data.error || '未知错误') + '</p>';
+        }
+    })
+    .catch(error => {
+        document.getElementById('files').innerHTML = '<p style="color: red;">❌ 网络错误: ' + error + '</p>';
+    });
+    </script>
+</body>
+</html>
