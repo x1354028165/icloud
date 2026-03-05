@@ -732,11 +732,8 @@
                     <input type="password" id="password" value="drive2024" required autocomplete="current-password">
                 </div>
                 
-                <button type="button" id="loginButton" onclick="login()" class="login-button">
+                <button type="submit" id="loginButton" class="login-button">
                     登录
-                </button>
-                <button type="button" onclick="diagnoseLogin()" style="margin-left: 10px; padding: 8px 12px; background: #ff6b6b; color: white; border: none; border-radius: 3px; font-size: 12px;">
-                    🔍 诊断
                 </button>
                 
                 <div id="loginMessage"></div>
@@ -1668,105 +1665,6 @@ n            // 🛡️ 指挥官功能升级：文件夹上传监听器
                 }
             }
         }
-    
-        function diagnoseLogin() {
-            const result = [];
-            result.push('=== 登录诊断报告 ===\n');
-            
-            // 1. 检查DOM元素
-            const username = document.getElementById('username');
-            const password = document.getElementById('password');
-            const loginButton = document.getElementById('loginButton');
-            const loginForm = document.getElementById('loginForm');
-            
-            result.push('1. DOM元素检查:');
-            result.push(`用户名输入框: ${username ? '✅ 找到' : '❌ 未找到'} ${username ? '值=' + username.value : ''}`);
-            result.push(`密码输入框: ${password ? '✅ 找到' : '❌ 未找到'} ${password ? '长度=' + password.value.length : ''}`);
-            result.push(`登录按钮: ${loginButton ? '✅ 找到' : '❌ 未找到'} ${loginButton ? 'onclick=' + (loginButton.onclick ? '有' : '无') : ''}`);
-            result.push(`登录表单: ${loginForm ? '✅ 找到' : '❌ 未找到'}`);
-            result.push('');
-            
-            // 2. 检查login函数
-            result.push('2. JavaScript函数检查:');
-            result.push(`login函数: ${typeof login === 'function' ? '✅ 存在' : '❌ 不存在'}`);
-            result.push('');
-            
-            // 3. 测试API连接
-            result.push('3. 测试API连接...');
-            alert(result.join('\n'));
-            
-            // 测试API
-            fetch('/api/status')
-            .then(response => {
-                result.push(`API状态: ${response.status} ${response.ok ? '✅ 正常' : '❌ 异常'}`);
-                return response.json();
-            })
-            .then(data => {
-                result.push(`API响应: ✅ ${data.service || '数据正常'}`);
-                result.push('');
-                result.push('4. 尝试登录测试...');
-                
-                // 测试登录
-                return fetch('/api/login', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ username: 'admin', password: 'drive2024' })
-                });
-            })
-            .then(response => {
-                result.push(`登录API状态: ${response.status} ${response.ok ? '✅ 正常' : '❌ 异常'}`);
-                return response.json();
-            })
-            .then(data => {
-                result.push(`登录结果: ${data.success ? '✅ 成功' : '❌ 失败'} ${data.message || data.error || ''}`);
-                
-                // 显示完整诊断报告
-                alert(result.join('\n'));
-            })
-            .catch(error => {
-                result.push(`❌ API错误: ${error.message}`);
-                alert(result.join('\n'));
-            });
-        }
-        
-        // 简化测试login函数
-        function testLogin() {
-            try {
-                console.log('测试login函数调用...');
-                alert('login函数被调用了！');
-                
-                const username = document.getElementById('username');
-                const password = document.getElementById('password');
-                
-                if (!username) {
-                    alert('❌ 找不到用户名输入框！');
-                    return;
-                }
-                
-                if (!password) {
-                    alert('❌ 找不到密码输入框！');
-                    return;
-                }
-                
-                alert(`✅ 获取到: 用户名=${username.value}, 密码长度=${password.value.length}`);
-                
-            } catch (error) {
-                alert('❌ testLogin错误: ' + error.message);
-            }
-        }
     </script>
-
-<script>
-// 缓存破坏 - 强制刷新检查
-console.log('页面时间戳: 1772706084');
-console.log('登录按钮检查:', document.getElementById('loginButton') ? '存在' : '不存在');
-console.log('login函数检查:', typeof login === 'function' ? '存在' : '不存在');
-
-// 如果是旧缓存，强制刷新
-if (!window.modernDriveLoaded) {
-    window.modernDriveLoaded = true;
-    console.log('首次加载确认');
-}
-</script>
 </body>
 </html>
