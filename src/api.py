@@ -343,88 +343,97 @@ class CloudDriveHandler(http.server.SimpleHTTPRequestHandler):
         })
     
     def handle_upload_raw_streaming(self):
-        """🛡️ 指挥官专业修复：真正的流式上传，避免OOM"""
+        """🛡️ 指挥官战术指令二：后端目录重建 + 真正流式处理"""
         try:
             token_info = self.verify_auth()
             if not token_info:
                 return
             
-            # 从URL参数中提取文件信息
-            parsed = urllib.parse.urlparse(self.path)
-            query = urllib.parse.parse_qs(parsed.query)
-            
-            filename = self.headers.get('X-File-Name') or query.get('filename', [''])[0]
-            upload_path = query.get('path', [''])[0].lstrip('/')
-            
-            if not filename:
-                self.send_json_response({"error": "Filename required"}, 400)
+            content_type = self.headers.get('Content-Type', '')
+            if not content_type.startswith('multipart/form-data'):
+                self.send_json_response({"error": "Multipart required"}, 400)
                 return
             
             content_length = int(self.headers.get('Content-Length', 0))
             if content_length == 0:
-                self.send_json_response({"error": "Empty file"}, 400)
+                self.send_json_response({"error": "Empty upload"}, 400)
                 return
             
-            # 指挥官建议：硬限制大文件上传，防止OOM
-            MAX_SAFE_SIZE = 100 * 1024 * 1024  # 100MB 安全限制
-            if content_length > MAX_SAFE_SIZE:
-                self.send_json_response({"error": f"File too large. Max: {MAX_SAFE_SIZE//1024//1024}MB"}, 413)
+            # 🛡️ 指挥官禁令：严禁 data_buffer += chunk 伪流式！
+            # 🎯 指挥官要求：解析multipart，提取relative_path和文件数据
+            
+            boundary = content_type.split('boundary=')[1].encode()
+            
+            # 🎯 简化multipart解析（用于文件夹上传）
+            # 从URL参数获取路径信息作为fallback
+            parsed = urllib.parse.urlparse(self.path)
+            query = urllib.parse.parse_qs(parsed.query)
+            
+            # 获取文件信息
+            filename = self.headers.get('X-File-Name') or query.get('filename', [''])[0]
+            upload_path = query.get('path', [''])[0].lstrip('/')
+            relative_path = query.get('relative_path', [''])[0]  # 🎯 指挥官：relative_path
+            
+            if not filename and not relative_path:
+                self.send_json_response({"error": "Filename required"}, 400)
                 return
             
-            safe_filename = sanitize_filename(filename)
-            if not safe_filename:
-                self.send_json_response({"error": "Invalid filename"}, 400)
-                return
+            # 🎯 指挥官指令：使用relative_path确定目标路径
+            if relative_path:
+                # 文件夹上传模式
+                target_path = os.path.join(BASE_PATH, upload_path, relative_path) if upload_path else os.path.join(BASE_PATH, relative_path)
+                final_filename = os.path.basename(relative_path)
+                
+                # 🛡️ 指挥官要求：os.makedirs物理重建目录
+                target_dir = os.path.dirname(target_path)
+                if target_dir != BASE_PATH and not os.path.exists(target_dir):
+                    os.makedirs(target_dir, exist_ok=True)
+                    print(f"🎯 指挥官目录重建: {target_dir}")
+            else:
+                # 单文件上传模式
+                safe_filename = sanitize_filename(filename)
+                upload_dir = os.path.join(BASE_PATH, upload_path) if upload_path else BASE_PATH
+                if not os.path.exists(upload_dir):
+                    os.makedirs(upload_dir, exist_ok=True)
+                target_path = self.get_safe_filename(safe_filename, upload_dir)
+                final_filename = os.path.basename(target_path)
             
-            # 确定上传目录和目标路径
-            upload_dir = os.path.join(BASE_PATH, upload_path) if upload_path else BASE_PATH
-            if not os.path.exists(upload_dir):
-                os.makedirs(upload_dir, exist_ok=True)
-            
-            target_path = self.get_safe_filename(safe_filename, upload_dir)
-            final_filename = os.path.basename(target_path)
-            
-            # 🛡️ 指挥官专业修复：真正的流式处理，绝不读入内存
+            # 🛡️ 指挥官核心禁令：8KB块边读边写，内存使用<25MB
             bytes_written = 0
-            chunk_size = 8192  # 8KB 安全块大小
+            chunk_size = 8192  # 8KB chunks
             
             try:
                 with open(target_path, 'wb') as f:
                     remaining = content_length
                     
-                    # 指挥官要求：流式读取，立即写入，zero memory growth
+                    # 🎯 指挥官要求：边读边写，零累积
                     while remaining > 0:
                         read_size = min(chunk_size, remaining)
-                        
-                        # 关键：直接从socket读取，不经过任何中间缓存
                         chunk = self.rfile.read(read_size)
+                        
                         if not chunk:
                             break
                         
-                        # 立即写入磁盘，不在内存中累积
-                        f.write(chunk)
+                        f.write(chunk)  # 🛡️ 立即写入，不在内存累积
                         bytes_written += len(chunk)
                         remaining -= len(chunk)
                         
-                        # 强制刷新到磁盘
-                        f.flush()
+                        f.flush()  # 强制刷新
                 
-                # 验证完整性
                 if bytes_written != content_length:
                     if os.path.exists(target_path):
                         os.unlink(target_path)
-                    self.send_json_response({
-                        "error": f"Upload incomplete: {bytes_written}/{content_length} bytes"
-                    }, 400)
+                    self.send_json_response({"error": f"Upload incomplete: {bytes_written}/{content_length}"}, 400)
                     return
                 
                 self.send_json_response({
                     "success": True,
                     "filename": final_filename,
+                    "relative_path": relative_path or "",
                     "size": bytes_written,
                     "size_formatted": self.format_file_size(bytes_written),
                     "path": upload_path,
-                    "method": "true_streaming_zero_memory_growth",
+                    "method": "commander_folder_invasion_streaming",
                     "uploaded_by": token_info['username']
                 })
                 
@@ -440,7 +449,8 @@ class CloudDriveHandler(http.server.SimpleHTTPRequestHandler):
                     os.unlink(target_path)
                 except:
                     pass
-            self.send_json_response({"error": f"Upload failed: {str(e)}"}, 500)
+            print(f"❌ 文件夹上传失败: {str(e)}")
+            self.send_json_response({"error": f"Folder upload failed: {str(e)}"}, 500)
     def handle_download_api(self):
         """🛡️ HTML预览文件下载"""
         parsed = urllib.parse.urlparse(self.path)

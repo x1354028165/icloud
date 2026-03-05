@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Modern Drive - 私有云盘</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+    <meta http-equiv="Pragma" content="no-cache">
+    <meta http-equiv="Expires" content="0">
     <style>
         :root {
             --primary-color: #1a73e8;
@@ -753,6 +756,9 @@
                 <input type="file" id="fileInput" multiple>
                 <button class="upload-btn" onclick="document.getElementById('fileInput').click()">
                     📤 上传
+                    <button id="folderUploadBtn" class="btn-secondary" style="margin-left: 10px;">
+                        📁 上传文件夹
+                    </button>
                 </button>
                 <input type="file" id="folderInput" webkitdirectory multiple style="display: none;">
                 <button class="upload-btn" onclick="document.getElementById('folderInput').click()" style="margin-left: 8px;">
@@ -1456,6 +1462,9 @@ n            // 🛡️ 指挥官功能升级：文件夹上传监听器
                 
                 try {
                     console.log(`📤 上传文件 ${i+1}/${files.length}: ${relativePath}`);
+                    <button id="folderUploadBtn" class="btn-secondary" style="margin-left: 10px;">
+                        📁 上传文件夹
+                    </button>
                     
                     // 创建目录结构（如果需要）
                     const dirPath = targetPath.split('/').slice(0, -1).join('/');
