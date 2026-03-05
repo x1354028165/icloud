@@ -1364,7 +1364,7 @@
 
             document.addEventListener('dragleave', (e) => {
                 dragCounter--;
-                if (dragCounter === 0) {
+                if (dragCounter  {
                 dragCounter = 0;
                 dragOverlay.style.display = 'none';
                 

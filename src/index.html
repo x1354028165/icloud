@@ -913,17 +913,17 @@
                     localStorage.setItem('auth_token', authToken);
                     localStorage.setItem('current_user', currentUser);
                     
-                    messageDiv.innerHTML = '<div class="success-message">登录成功！</div>';
+                    messageDiv.innerHTML = '';
                     
                     setTimeout(() => {
                         showMainInterface();
                         loadFiles();
                     }, 1000);
                 } else {
-                    messageDiv.innerHTML = '<div class="error-message">' + (result.error || '登录失败') + '</div>';
+                    messageDiv.innerHTML = '';
                 }
             } catch (error) {
-                messageDiv.innerHTML = '<div class="error-message">网络错误: ' + error.message + '</div>';
+                messageDiv.innerHTML = '';
             } finally {
                 loginButton.disabled = false;
                 loginButton.textContent = '登录';
@@ -1044,7 +1044,7 @@
                 }
             } catch (error) {
                 document.getElementById('loadingIndicator').innerHTML = 
-                    '<div style="color: #d93025;">加载失败: ' + error.message + '</div>';
+                    '';
             }
         }
 
@@ -1071,7 +1071,7 @@
             });
             
             if (files.length === 0 && !path) {
-                tbody.innerHTML = '<tr><td colspan="3" style="text-align: center; padding: 48px; color: #5f6368;">暂无文件</td></tr>';
+                tbody.innerHTML = '暂无文件';
             }
         }
 
@@ -1092,16 +1092,14 @@
             const modified = file.modified || '--';
             
             row.innerHTML = `
-                <td>
-                    <div class="file-name-cell">
-                        <div class="file-icon">${icon}</div>
-                        <div class="file-details">
-                            <div class="file-name">${escapeHtml(file.name)}</div>
-                        </div>
-                    </div>
-                </td>
-                <td class="file-size">${size}</td>
-                <td class="file-modified">${modified}</td>
+                
+                    
+                        
+                        
+                    
+                
+                ${size}
+                ${modified}
             `;
             
             // 🎯 左键点击事件
@@ -1147,21 +1145,11 @@
             const filePath = currentPath ? `${currentPath}/${file.name}` : file.name;
             
             menu.innerHTML = `
-                <div class="context-menu-item" onclick="previewFile({name: '${file.name}', type: '${file.type}'}); hideContextMenu();">
-                    👁️ 预览
-                </div>
-                <div class="context-menu-item" onclick="downloadFile('${filePath}'); hideContextMenu();">
-                    📥 下载
-                </div>
-                <div class="context-menu-item" onclick="renameFile('${file.name}'); hideContextMenu();">
-                    ✏️ 重命名
-                </div>
-                <div class="context-menu-item" onclick="shareFile('${filePath}'); hideContextMenu();">
-                    🔗 分享
-                </div>
-                <div class="context-menu-item" onclick="deleteFile('${filePath}'); hideContextMenu();">
-                    🗑️ 删除
-                </div>
+                
+                
+                
+                
+                
             `;
             
             document.body.appendChild(menu);
@@ -1337,12 +1325,12 @@
             }
             
             const parts = path.split('/').filter(p => p);
-            let html = '<span onclick="loadFiles(\'\')" style="cursor: pointer;">我的文件</span>';
+            let html = '';
             
             let currentPath = '';
             parts.forEach(part => {
                 currentPath = currentPath ? `${currentPath}/${part}` : part;
-                html += ` / <span onclick="loadFiles('${currentPath}')" style="cursor: pointer;">${escapeHtml(part)}</span>`;
+                html += ` / `;
             });
             
             breadcrumb.innerHTML = html;
@@ -1376,13 +1364,7 @@
 
             document.addEventListener('dragleave', (e) => {
                 dragCounter--;
-                if (dragCounter <= 0) {
-                    dragCounter = 0;
-                    dragOverlay.style.display = 'none';
-                }
-            });
-
-            document.addEventListener('drop', async (e) => {
+                if (dragCounter === 0) {
                 dragCounter = 0;
                 dragOverlay.style.display = 'none';
                 
@@ -1439,35 +1421,18 @@ n            // 🛡️ 指挥官功能升级：文件夹上传监听器
                 padding: 16px; max-width: 300px; box-shadow: 0 4px 16px rgba(0,0,0,0.15);
             `;
             progressContainer.innerHTML = `
-                <div style="font-weight: bold; margin-bottom: 8px;">📁 文件夹上传进度</div>
-                <div id="folderProgressText">正在上传 ${files.length} 个文件...</div>
-                <div style="background: #f1f3f4; height: 4px; border-radius: 2px; margin: 8px 0;">
-                    <div id="folderProgressBar" style="background: #1a73e8; height: 100%; border-radius: 2px; width: 0%; transition: width 0.3s;"></div>
-                </div>
-                <div id="folderProgressDetail">准备中...</div>
+                
+                
+                
+                
+                
             `;
             document.body.appendChild(progressContainer);
             
             let uploaded = 0;
             let failed = 0;
             
-            for (let i = 0; i < files.length; i++) {
-                const file = files[i];
-                const progressBar = document.getElementById('folderProgressBar');
-                const progressText = document.getElementById('folderProgressText');
-                const progressDetail = document.getElementById('folderProgressDetail');
-                
-                // 获取文件的相对路径
-                const relativePath = file.webkitRelativePath || file.name;
-                const targetPath = currentPath ? `${currentPath}/${relativePath}` : relativePath;
-                
-                progressDetail.textContent = `正在上传: ${relativePath}`;
-                
-                try {
-                    console.log(`📤 上传文件 ${i+1}/${files.length}: ${relativePath}`);
-                    <button id="folderUploadBtn" class="btn-secondary" style="margin-left: 10px;">
-                        📁 上传文件夹
-                    </button>
+            for (let i = 0; i 
                     
                     // 创建目录结构（如果需要）
                     const dirPath = targetPath.split('/').slice(0, -1).join('/');
@@ -1493,11 +1458,9 @@ n            // 🛡️ 指挥官功能升级：文件夹上传监听器
             // 完成提示
             setTimeout(() => {
                 progressContainer.innerHTML = `
-                    <div style="font-weight: bold; color: ${failed > 0 ? '#d93025' : '#137333'};">
-                        📁 文件夹上传完成
-                    </div>
-                    <div>✅ 成功: ${uploaded} 个文件</div>
-                    ${failed > 0 ? `<div>❌ 失败: ${failed} 个文件</div>` : ''}
+                    
+                    
+                    ${failed > 0 ? `` : ''}
                 `;
                 
                 setTimeout(() => {
